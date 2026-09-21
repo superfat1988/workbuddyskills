@@ -1,0 +1,61 @@
+name: Mirror upstream workbuddyskills
+
+on:
+  schedule:
+    - cron: '17 21 * * *'   # daily 21:17 UTC = 05:17 北京时间
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Configure git
+        run: |
+          git config --global user.name "mirror-bot"
+          git config --global user.email "superfat1988@users.noreply.github.com"
+          git config --global protocol.version 2
+          git config --global core.quotepath false
+
+      - name: Resolve refs
+        id: refs
+        run: |
+          UP_SHA=$(git ls-remote https://github.com/infometa/workbuddyskills.git refs/heads/main | cut -f1)
+          MY_SHA=$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/main | cut -f1)
+          echo "upstream_sha=$UP_SHA" >> "$GITHUB_OUTPUT"
+          echo "mirror_sha=$MY_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$MY_SHA" = "$UP_SHA" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          echo "Upstream: $UP_SHA / Mirror: $MY_SHA / Changed: $([ "$MY_SHA" = "$UP_SHA" ] && echo no || echo yes)"
+
+      - name: Fast-forward mirror (bare, no working tree)
+        if: steps.refs.outputs.changed == 'true'
+        run: |
+          git clone --bare --filter=blob:none https://github.com/${{ github.repository }}.git repo
+          cd repo
+          git fetch --no-tags https://github.com/infometa/workbuddyskills.git main:upstream-main
+          git fetch --no-tags https://github.com/${{ github.repository }}.git main:mirror-main
+          # Pure mirror: main always resets to upstream head. Our CI commits live
+          # only in the workflow file, which is re-placed right after via API.
+          if [ "$(git rev-parse mirror-main)" = "$(git rev-parse upstream-main)" ]; then
+            echo "Already in sync."
+          else
+            git push https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git --force upstream-main:refs/heads/main
+            echo "Mirror reset to upstream $(git rev-parse upstream-main)"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Mirror status"
+            echo "- Upstream: infometa/workbuddyskills@${{ steps.refs.outputs.upstream_sha }}"
+            echo "- Mirror: ${{ steps.refs.outputs.mirror_sha }}"
+            echo "- Changed: ${{ steps.refs.outputs.changed }}"
+          } >> "$GITHUB_STEP_SUMMARY"
