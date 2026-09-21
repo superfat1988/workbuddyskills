@@ -1,0 +1,56 @@
+name: Mirror upstream workbuddyskills
+
+# Scheduled workflows only run from the repository's DEFAULT branch, so this
+# file lives on `main`. `main` is a control branch and is never rewritten;
+# the upstream content snapshot is published to the `mirror` branch, which is
+# what the DSH hub downloads from.
+on:
+  schedule:
+    - cron: '17 21 * * *'   # 21:17 UTC = 05:17 Asia/Shanghai
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve refs
+        id: refs
+        run: |
+          UP=$(git ls-remote https://github.com/infometa/workbuddyskills.git refs/heads/main | cut -f1)
+          MIR=$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/mirror | cut -f1)
+          echo "upstream=$UP" >> "$GITHUB_OUTPUT"
+          echo "mirror=$MIR" >> "$GITHUB_OUTPUT"
+          if [ "$UP" = "$MIR" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          echo "upstream=$UP mirror=$MIR"
+
+      - name: Publish upstream snapshot to mirror branch
+        if: steps.refs.outputs.changed == 'true'
+        run: |
+          # Bare clone: the upstream tree contains very long non-UTF8 paths that
+          # a working-tree checkout rejects with "File name too long".
+          git clone --bare --filter=blob:none https://github.com/${{ github.repository }}.git repo
+          cd repo
+          git fetch --no-tags https://github.com/infometa/workbuddyskills.git main:upstream-main
+          git fetch --no-tags https://github.com/${{ github.repository }}.git mirror:old-mirror || true
+          git push https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git \
+            --force upstream-main:refs/heads/mirror
+          echo "mirror branch -> $(git rev-parse upstream-main)"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Mirror status"
+            echo "- upstream: ${{ steps.refs.outputs.upstream }}"
+            echo "- mirror (before): ${{ steps.refs.outputs.mirror }}"
+            echo "- changed: ${{ steps.refs.outputs.changed }}"
+            echo "- control branch: main (never rewritten)"
+          } >> "$GITHUB_STEP_SUMMARY"
